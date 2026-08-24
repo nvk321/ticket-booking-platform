@@ -1,0 +1,64 @@
+﻿# TicketFlow — AI Agent Development Context & Rules
+
+## 1. Project Overview & Identity
+- **Project Name**: TicketFlow — Smart Ticket Booking Platform
+- **Domain**: High-concurrency ticket booking platform for movies and concerts featuring interactive visual seat maps, real-time WebSocket availability, configurable TTL seat holds, and category-based FIFO waitlists with automated offer cascading.
+- **Repository Structure**: Monorepo with `backend/`, `frontend/`, `docs/`, and root `docker-compose.yml`.
+
+---
+
+## 2. Mandatory Rules for Future AI Agents
+
+### Rule 1: Always Inspect Before Modifying
+Never assume a feature exists or is missing without inspecting the actual code, schema, and API routes. Always check Git status and existing files before proposing changes.
+
+### Rule 2: Strict VenueSeat vs EventSeat Separation
+- **`VenueSeat` (Physical Seat)**: Defined in the `seats` table. Represents physical coordinates, screen association, and permanent category (`seatTypeId`). NEVER write runtime booking status (`BOOKED`, `HELD`) directly to the physical `seats` table.
+- **`EventSeat` (Runtime Availability)**: Computed on the fly for a given `showId` by aggregating `shows`, active `seat_holds` (`expiresAt > NOW()`), and confirmed `booking_seats`.
+
+### Rule 3: Database as the Single Source of Truth for Concurrency
+- Never rely on in-memory locks, global JavaScript/Python variables, single-container memory, or frontend state for booking safety.
+- All hold creations, checkout confirmations, and cancellations MUST execute within atomic database transactions (`prisma.$transaction`).
+- Always respect and maintain database unique constraints (`UNIQUE(seatId, showId)` on `seat_holds` and `UNIQUE(bookingId, seatId)` on `booking_seats`).
+
+### Rule 4: Configurable TTL Rules (No Hardcoded Constants)
+- Hold durations MUST be configurable via environment variables (`SEAT_HOLD_TTL_MINUTES`, `WAITLIST_OFFER_TTL_MINUTES`).
+- Server time in UTC MUST be used for all timestamp comparisons (`expiresAt > NOW()`).
+
+### Rule 5: Strict Security & Secret Hygiene
+- NEVER commit `.env` files or hardcode credentials, JWT secrets, or database passwords in code or documentation.
+- Maintain `.env.example` with safe development placeholders.
+- Enforce JWT authentication and role-based access control (`SUPER_ADMIN`, `THEATRE_ADMIN`, `USER`) on all protected endpoints.
+
+### Rule 6: Minimal Dependency & Clean Infrastructure Policy
+- Do not introduce heavy messaging brokers (Kafka, RabbitMQ, Celery, Redis locks) unless an unavoidable requirement is proven.
+- Keep the local development workflow minimal: Docker Compose manages PostgreSQL 16; frontend and backend run natively with hot-reloading.
+
+### Rule 7: Honest Feature Status Reporting
+- Never mark a feature as IMPLEMENTED if only scaffolding or partial routes exist.
+- Distinguish clearly between IMPLEMENTED, PARTIALLY IMPLEMENTED, and PLANNED.
+
+---
+
+## 3. Directory Responsibilities
+
+| Directory | Purpose & Boundaries |
+|---|---|
+| `backend/src/routes/` | HTTP request/response handling, parameter validation, role checking. Delegate complex workflows to transactional logic. |
+| `backend/src/socket/` | Real-time WebSocket connection handling, room management (`show:{id}`), and broadcast events. |
+| `backend/src/middleware/` | JWT authentication (`authenticate`), role-based guards (`requireRole`, `requireTheatreAdmin`). |
+| `backend/prisma/` | Schema definition (`schema.prisma`) and versioned SQL migration files (`migrations/`). |
+| `frontend/src/pages/` | Page components for customers (Seat Map, Movie Detail, History) and Organisers (Dashboard, Layout Builder, Analytics). |
+| `frontend/src/lib/` | Shared Axios API client with auth interceptors and Socket.io client instance. |
+| `frontend/src/store/` | Zustand state stores (Authentication & Session). |
+| `docs/` | Authoritative engineering documentation, architectural decisions, and requirement matrices. |
+
+---
+
+## 4. Verification Workflow for Future Phases
+After making significant changes, future agents MUST:
+1. Verify PostgreSQL container health: `docker compose ps`
+2. Run database migrations: `cd backend && npx prisma migrate deploy`
+3. Verify backend launch & health endpoint: `GET http://localhost:5000/health`
+4. Test frontend production build: `cd frontend && npm run build`
+5. Test relevant API endpoints and verify no console/runtime regressions.
