@@ -1,79 +1,11 @@
-﻿# TicketFlow — Category-Based Waitlist Architecture & Reassignment
+# TicketFlow — Category Waitlist & Reassignment Engine
 
-## 1. Objectives & Business Context
+## 1. Overview
+TicketFlow implements category-based FIFO waitlists that automatically reallocate freed seats when bookings are cancelled.
 
-When high-demand shows (movies or concerts) sell out in specific seat categories (e.g. all Royal or Balcony seats are booked), customers can join a **category-specific waitlist**.
-
-When a confirmed booking is cancelled, TicketFlow's waitlist engine automatically detects newly freed seats and offers them to the next eligible customer in strict **First-In, First-Out (FIFO)** order with a **time-limited offer**.
-
----
-
-## 2. Core Functional Requirements
-
-1. **Category Scoping**: Waitlists are partitioned by `(eventId/showId, seatTypeId)`. A user waiting for a "Balcony" ticket is not offered a "Second Class" ticket unless they registered for that category.
-2. **Duplicate Prevention**: A user cannot register multiple active waitlist entries for the exact same event and category.
-3. **Strict FIFO Queue Ordering**: Queue priority is governed by registration timestamp (`createdAt ASC`).
-4. **Time-Limited Offers**: When a seat frees up, the candidate receives an exclusive time-limited offer (governed by `WAITLIST_OFFER_TTL_MINUTES`, e.g. 15 minutes).
-5. **Cascading Reassignment**: If the customer fails to claim or explicitly declines the offer before it expires, the offer transitions to `EXPIRED` and the seat is automatically offered to the next waitlisted user.
-
----
-
-## 3. Waitlist State Machine
-
-```
-              +-------------------------------------+
-              | Customer Joins Waitlist for Category|
-              +------------------+------------------+
-                                 │
-                                 v
-                     [ Status: PENDING IN QUEUE ]
-                                 │
-                 Ticket Cancelled / Seat Freed
-                                 │
-                                 v
-                     [ Status: OFFER_PENDING ]
-                     (Hold reserved for user)
-                                 │
-        ┌────────────────────────┴────────────────────────┐
-        │                                                 │
- User Accepts Offer                               Offer TTL Expires /
- (POST /waitlist/claim)                           User Declines
-        │                                                 │
-        v                                                 v
- [ Status: FULFILLED ]                            [ Status: EXPIRED ]
- (Booking Created & Confirmed)                            │
-                                                  Trigger Next Waitlist Candidate
-                                                          │
-                                                          v
-                                                  [ Status: OFFER_PENDING ]
-```
-
----
-
-## 4. Reassignment Workflow on Cancellation
-
-```
-1. Customer A initiates booking cancellation:
-   PATCH /api/bookings/:id/cancel
-   
-2. Database transaction:
-   a. Updates Booking status to CANCELLED.
-   b. Marks Payment as REFUNDED.
-   c. Identifies freed seat categories and count.
-
-3. Waitlist Orchestrator:
-   a. Queries earliest PENDING waitlist entry for (showId, seatTypeId) with `FOR UPDATE SKIP LOCKED`.
-   b. If candidate exists:
-      - Creates a temporary exclusive `SeatHold` for candidate with `expiresAt = NOW() + WAITLIST_OFFER_TTL_MINUTES`.
-      - Updates waitlist entry to `OFFER_PENDING`.
-      - Dispatches notification / email to customer with one-click claim URL.
-   c. If no waitlist candidate exists:
-      - Emits `seats:released` via WebSocket, returning seat to public `AVAILABLE` inventory.
-```
-
----
-
-## 5. Concurrency & Fairness Guarantees
-
-- **Transactional FIFO Lock**: Waitlist claims use atomic transactional locking to prevent two waitlist candidates from receiving the same cancelled seat.
-- **Expiry Cleanup Job**: A scheduled background job runs periodically to sweep `OFFER_PENDING` entries where `offerExpiresAt < NOW()`, marking them `EXPIRED` and triggering the next candidate evaluation.
+## 2. Key Workflow
+1. **Join**: Customer joins waitlist for a specific show and seat tier (`POST /api/v1/waitlist/join`).
+2. **Queue Position**: Calculated on demand via `COUNT(*) WHERE created_at <= entry.created_at`.
+3. **Cancellation Trigger**: When a booking is cancelled, `WaitlistService.cascade_next_offer` locates the oldest `PENDING` waitlist entry using `SKIP LOCKED`.
+4. **Time-Limited Offer**: The candidate receives an exclusive `SeatHold` valid for `WAITLIST_OFFER_TTL_MINUTES` (15 minutes), and an email notification with one-click claim instructions.
+5. **Claim or Expire**: If claimed before expiry, the ticket is confirmed; if expired, the sweeper marks the entry `EXPIRED` and cascades the offer to the next in queue.\n

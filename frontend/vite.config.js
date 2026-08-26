@@ -6,14 +6,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:5000', changeOrigin: true },
-      '/socket.io': {
+      '/api': {
         target: 'http://localhost:5000',
         changeOrigin: true,
         ws: true,
-        configure: (proxy) => {
-          proxy.on('error', () => {}); // suppress ECONNABORTED noise
-        },
       },
     },
   },

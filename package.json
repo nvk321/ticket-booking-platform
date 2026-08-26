@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "ticketflow",
   "version": "1.0.0",
   "description": "TicketFlow — Smart Ticket Booking Platform",
@@ -7,17 +7,23 @@
     "postgres:up": "docker compose up -d postgres",
     "postgres:down": "docker compose down",
     "postgres:status": "docker compose ps",
-    "backend:install": "npm --prefix backend install",
-    "backend:dev": "npm --prefix backend run dev",
-    "backend:migrate": "npm --prefix backend run db:migrate",
-    "backend:seed": "npm --prefix backend run db:seed",
+    "backend:install": "cd backend && pip install -r requirements.txt",
+    "backend:dev": "cd backend && uvicorn app.main:app --host 0.0.0.0 --port 5000 --reload",
+    "backend:seed": "cd backend && python seed.py",
+    "backend:test": "cd backend && pytest",
     "frontend:install": "npm --prefix frontend install",
     "frontend:dev": "npm --prefix frontend run dev",
-    "frontend:build": "npm --prefix frontend run build"
+    "frontend:build": "npm --prefix frontend run build",
+    "test": "cd backend && pytest"
   },
   "keywords": [
     "ticket-booking",
     "ticketflow",
+    "fastapi",
+    "pydantic",
+    "sqlalchemy",
+    "react",
+    "typescript",
     "seat-selection",
     "concurrency",
     "waitlist",

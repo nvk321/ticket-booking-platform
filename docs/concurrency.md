@@ -1,114 +1,21 @@
-﻿# TicketFlow — Concurrency Architecture & Double-Booking Prevention
+# TicketFlow — Concurrency & Race Condition Analysis
 
-## 1. Concurrency Problem Statement
+## 1. Concurrency Scenarios & Formal Guarantees
 
-In high-demand ticket sales (e.g. blockbuster movie premiere or stadium concert), hundreds of concurrent customers may attempt to select, hold, and purchase the exact same high-value seat (e.g. Row C, Seat 8) at the exact same millisecond.
+### Scenario A: Simultaneous Seat Hold
+- **Condition**: User A and User B request a hold on the exact same seat (`seat_id`, `show_id`) at the same millisecond.
+- **Resolution**: Both requests open transactions in `HoldService.hold_seats`. The `UNIQUE(seat_id, show_id)` constraint on `seat_holds` ensures PostgreSQL accepts the first insert and raises an `IntegrityError` on the second.
+- **Outcome**: The winner receives HTTP 200 with hold expiration timestamp; the loser receives HTTP 409 Conflict with `"Some seats are currently held by another user"`.
 
-A naive implementation that relies on:
-1. Application-level memory locks (e.g. Node.js variables or Python threading locks),
-2. Single-container memory, or
-3. Application-level "check-then-act" queries without database transactions (`SELECT status; if (status == AVAILABLE) UPDATE ...`)
+### Scenario B: Simultaneous Booking / Checkout
+- **Condition**: Two requests attempt to confirm bookings for the same seat simultaneously.
+- **Resolution**: `BookingService.create_booking` locks active bookings with `SELECT ... FOR UPDATE` and inserts `BookingSeat` with `show_id`. The partial unique index `ix_booking_seats_show_seat_active` guarantees atomicity.
+- **Outcome**: Exactly one booking commits; the conflicting transaction rolls back and returns HTTP 409 Conflict.
 
-**WILL FAIL catastrophically under concurrent load**, leading to race conditions where two customers both receive confirmation for the same physical seat.
+### Scenario C: Hold Expiration vs. Concurrent Checkout
+- **Condition**: A customer attempts checkout at the moment their hold expires, while another customer attempts to hold the same seat.
+- **Resolution**: `create_booking` validates `SeatHold.expires_at > NOW()` within the transaction. If expired, checkout is rejected, ensuring no customer can book an expired hold.
 
----
-
-## 2. Theoretical Scenario & Race Condition Analysis
-
-### The Flawed Flow (Double-Booking Vulnerability)
-```
-  Customer A                             Database                             Customer B
-      │                                     │                                     │
-  (1) ├─────── Check Seat A1 Available? ────>│                                     │
-      │                                     │<────── Check Seat A1 Available? ────┤ (2)
-      │<────── Return "AVAILABLE" ──────────┤                                     │
-      │                                     ├─────── Return "AVAILABLE" ─────────>│
-  (3) ├─────── Book Seat A1 ───────────────>│                                     │
-      │                                     │<────── Book Seat A1 ────────────────┤ (4)
-      │<────── Booking Confirmed! ──────────┤                                     │
-      │                                     ├─────── Booking Confirmed! ─────────>│ (DOUBLE BOOKING)
-```
-
-In the naive scenario, both requests read the state before either writes back the new state.
-
----
-
-## 3. TicketFlow Concurrency Control Strategy
-
-TicketFlow prevents double-booking through a multi-layered database-authoritative model:
-
-```
-+-----------------------------------------------------------------------------+
-| Layer 1: PostgreSQL ACID Transactions (ISOLATION LEVEL / ATOMICITY)         |
-| All hold checks, price calculations, hold creation, and bookings run within |
-| an atomic database transaction (`prisma.$transaction`).                      |
-+-----------------------------------------------------------------------------+
-                                      │
-                                      v
-+-----------------------------------------------------------------------------+
-| Layer 2: Relational Unique Integrity Constraints                            |
-| * `seat_holds`: UNIQUE(seatId, showId)                                      |
-| * `booking_seats`: UNIQUE(bookingId, seatId)                                |
-| The database engine rejects duplicate insert attempts at the storage level. |
-+-----------------------------------------------------------------------------+
-                                      │
-                                      v
-+-----------------------------------------------------------------------------+
-| Layer 3: Atomic Conditional Evaluation During Hold & Checkout               |
-| When Customer A and Customer B simultaneously attempt to hold/book Seat A1: |
-| 1. The transaction checks for existing active holds (`expiresAt > NOW()`).  |
-| 2. The transaction checks for existing confirmed bookings.                  |
-| 3. If any conflict exists, the transaction throws and rolls back cleanly.   |
-| 4. Database upsert / unique lock ensures only one write succeeds.          |
-+-----------------------------------------------------------------------------+
-```
-
----
-
-## 4. Detailed Sequence: Simultaneous Hold Acquisition
-
-When **Customer A** (Session 1) and **Customer B** (Session 2) simultaneously request a 5-minute hold on Seat A1 for Show 101:
-
-```
-Customer A (Session 1)                   PostgreSQL Server                Customer B (Session 2)
-        │                                        │                                   │
-        │─── BEGIN TRANSACTION ─────────────────>│                                   │
-        │                                        │<─── BEGIN TRANSACTION ────────────│
-        │─── Check Existing Confirmed Bookings ─>│                                   │
-        │                                        │<─── Check Existing Confirmed Bookings
-        │─── Check Active Holds (expiresAt>now)─>│                                   │
-        │                                        │<─── Check Active Holds ───────────│
-        │─── UPSERT seat_holds ─────────────────>│                                   │
-        │    (Acquires Unique Constraint Lock)   │                                   │
-        │                                        │─── UPSERT seat_holds (BLOCKED) ───>
-        │<── Commit Success ─────────────────────┤                                   │
-        │                                        │    (Customer A holds lock)        │
-        │                                        │<── Evaluates Customer B ──────────┤
-        │                                        │    Sees foreign active hold!      │
-        │                                        │─── Rollback / Error Returned ────>│
-        │<── 200 OK: Hold Granted (5 min TTL)    │                                   │
-        │                                        │<── 400 Bad Request: Seat Held ────│
-```
-
----
-
-## 5. Booking Confirmation Concurrency Safety
-
-When confirming a booking:
-1. The transaction verifies that every requested seat either:
-   - Is actively held by the current user's session (`sessionId` match and `expiresAt > NOW()`), OR
-   - Is completely unheld and unbooked.
-2. The transaction inserts the booking and `booking_seats` rows.
-3. The transaction deletes the corresponding `seat_holds` records.
-4. If another customer tries to book or hold in the interim, the transaction fails and rolls back completely without leaving orphan holds or partial reservations.
-
----
-
-## 6. Multi-Worker & Multi-Instance Scalability
-
-Because concurrency safety is anchored directly in **PostgreSQL transaction semantics and unique table constraints**, the system remains 100% concurrency-safe even when:
-- Multiple Node.js backend processes run behind a load balancer (PM2 / Kubernetes / Docker replicas).
-- Multiple threads or asynchronous event loops process simultaneous HTTP/WebSocket requests.
-- Distributed worker processes execute hold expiration jobs.
-
-No shared in-memory state or distributed lock managers (like Redis Redlock) are required for baseline correctness, keeping the architecture simple, robust, and student-accessible.
+### Scenario D: Booking Cancellation vs. Waitlist Cascading
+- **Condition**: A booking is cancelled, triggering waitlist cascading.
+- **Resolution**: `WaitlistService.cascade_next_offer` uses `SELECT ... FOR UPDATE SKIP LOCKED` on the oldest `PENDING` waitlist entry, ensuring exactly one eligible candidate receives the offer without contention.\n

@@ -1,55 +1,16 @@
-﻿# TicketFlow — Architecture Decision Records (ADR)
+# TicketFlow — Architecture Decision Records (ADRs)
 
-## ADR-001: Monorepo Architecture with Decoupled Services
+## ADR-001: Database-Authoritative Concurrency Protection
 - **Status**: Accepted
-- **Context**: The project consists of a backend API server, database migration layer, and an interactive single-page React frontend.
-- **Decision**: Keep backend and frontend in a unified repository with clear folder separation (`backend/`, `frontend/`, `docs/`) and root-level Docker orchestration.
-- **Consequences**: Easy local development, atomic commits across full-stack features, simplified CI/CD.
+- **Decision**: Prevent double-bookings via PostgreSQL partial unique index `ix_booking_seats_show_seat_active` and `SELECT ... FOR UPDATE` row locks instead of in-memory application mutexes.
+- **Rationale**: Guarantees zero double bookings across multiple instances.
 
----
-
-## ADR-002: Technology Stack Selection (Node.js/Express + Prisma vs FastAPI)
-- **Status**: Accepted (Compatible Stack Preserved)
-- **Context**: The workspace contained a fully functioning, high-quality Node.js/Express + Prisma ORM + Socket.io backend and React + Vite frontend.
-- **Decision**: Preserve and standardize the existing compatible Node.js/Express + Prisma + PostgreSQL + Socket.io architecture rather than performing a high-risk, destructive full rewrite.
-- **Consequences**: Preserves working visual layout builders, real-time WebSocket infrastructure, and Prisma migrations while keeping the system lightweight, maintainable, and student-accessible.
-
----
-
-## ADR-003: Database-Centric Concurrency Control & Unique Integrity Constraints
+## ADR-002: Physical VenueSeat vs. Runtime EventSeat Separation
 - **Status**: Accepted
-- **Context**: Preventing double bookings under simultaneous customer requests is the highest-priority architectural requirement.
-- **Decision**: Reject reliance on single-process in-memory locks or frontend state. Use PostgreSQL ACID transactions with composite unique constraints (`UNIQUE(seatId, showId)` on `seat_holds` and `UNIQUE(bookingId, seatId)` on `booking_seats`) and atomic verification logic.
-- **Consequences**: Absolute correctness under concurrent load across multiple backend workers without requiring complex distributed lock managers like Redis Redlock.
+- **Decision**: Maintain physical coordinates and seat metadata in `seats` table, computing runtime availability on the fly from `shows`, `seat_holds`, and `booking_seats`.
+- **Rationale**: Prevents physical seats from permanently locking across different showtimes.
 
----
-
-## ADR-004: VenueSeat vs EventSeat Domain Separation
+## ADR-003: Lightweight In-Process Async Sweeper
 - **Status**: Accepted
-- **Context**: Physical venues host multiple events and showtimes over time. Storing global booking status directly on physical seats creates race conditions and prevents historical audits.
-- **Decision**: Distinguish physical `VenueSeat` (`seats` table) from per-event availability (`shows`, `seat_holds`, and `booking_seats`).
-- **Consequences**: The seat map status for any given event is dynamically computed by evaluating confirmed bookings and active unexpired holds against the immutable venue layout.
-
----
-
-## ADR-005: Hybrid Hold Expiration Strategy (Background Sweeper + Opportunistic Check)
-- **Status**: Accepted
-- **Context**: Temporary seat holds have a 5-minute TTL (`SEAT_HOLD_TTL_MINUTES`). Abandoned holds must be returned to inventory.
-- **Decision**: Implement a 30-second server-side interval sweeper that deletes expired `seat_holds` and emits `seats:holdExpired` via WebSockets, supplemented by `expiresAt > NOW()` query filters on all API operations.
-- **Consequences**: Zero stale holds even if the background timer experiences minor jitter, and instantaneous UI updates for active shoppers.
-
----
-
-## ADR-006: Category-Specific FIFO Waitlist Design
-- **Status**: Accepted
-- **Context**: Sold-out events require an orderly queue where cancellations trigger automatic reassignment.
-- **Decision**: Partition waitlists by `(showId, seatTypeId)` ordered by `createdAt ASC` (strict FIFO), granting candidates a time-limited hold (`WAITLIST_OFFER_TTL_MINUTES`) upon cancellation before cascading to the next user.
-- **Consequences**: Fair distribution of high-demand seats, automated inventory recovery, and zero manual intervention required by organisers.
-
----
-
-## ADR-007: Docker Compose for Database Infrastructure
-- **Status**: Accepted
-- **Context**: Developers need a reliable, identical PostgreSQL 16 database without installing native database servers.
-- **Decision**: Provide a clean `docker-compose.yml` defining the `postgres:16-alpine` service with persistent named volumes and automated healthchecks.
-- **Consequences**: Single-command startup (`docker compose up -d postgres`) across Windows, macOS, and Linux.
+- **Decision**: Use an asyncio in-process background worker for seat hold and waitlist TTL expirations rather than heavy message brokers (Celery/Redis/Kafka).
+- **Rationale**: Minimal infrastructure overhead, zero external broker dependencies, fast local setup.\n
