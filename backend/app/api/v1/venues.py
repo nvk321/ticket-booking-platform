@@ -24,7 +24,7 @@ async def list_theatres(
     city: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Theatre).where(Theatre.is_active == True)
+    query = select(Theatre).options(selectinload(Theatre.screens)).where(Theatre.is_active == True)
     if city:
         query = query.where(Theatre.city.ilike(f"%{city}%"))
     result = await db.execute(query.order_by(Theatre.name))

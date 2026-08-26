@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,11 +29,22 @@ class TheatreUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class ScreenSummary(BaseModel):
+    id: str
+    theatre_id: str
+    name: str
+    capacity: int = 0
+    rows: int = 10
+    cols: int = 15
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TheatreResponse(TheatreBase):
     id: str
     admin_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-    screens: Optional[List[dict]] = None
+    screens: Optional[List[ScreenSummary]] = None
 
     model_config = ConfigDict(from_attributes=True)
