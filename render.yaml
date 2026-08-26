@@ -1,7 +1,7 @@
 services:
   - type: web
     name: ticketflow-backend
-    env: python
+    runtime: python
     region: oregon
     plan: free
     rootDir: backend
