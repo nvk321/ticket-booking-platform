@@ -1,5 +1,5 @@
-﻿from datetime import datetime
-from typing import List, Optional
+from datetime import datetime
+from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -76,12 +76,20 @@ class LayoutSaveRequest(BaseModel):
     seats: List[SeatLayoutItem]
 
 
+class TheatreSummary(BaseModel):
+    id: str
+    name: str
+    city: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ScreenResponse(ScreenBase):
     id: str
     theatre_id: str
     created_at: datetime
     updated_at: datetime
-    theatre: Optional[dict] = None
+    theatre: Optional[TheatreSummary] = None
     seats: Optional[List[SeatResponse]] = None
 
     model_config = ConfigDict(from_attributes=True)

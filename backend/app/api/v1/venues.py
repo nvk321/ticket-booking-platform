@@ -2,6 +2,7 @@ import re
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_user, require_role
@@ -73,7 +74,7 @@ async def create_theatre(
         counter += 1
 
     theatre = Theatre(
-        name=theatre_in.name,
+        name=theatre_in.name.strip(),
         slug=slug,
         address=theatre_in.address,
         city=theatre_in.city,
@@ -85,7 +86,14 @@ async def create_theatre(
         is_active=theatre_in.is_active,
     )
     db.add(theatre)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A venue with this name or slug already exists."
+        )
 
     refetched = await db.execute(
         select(Theatre).options(selectinload(Theatre.screens)).where(Theatre.id == theatre.id)
@@ -110,9 +118,18 @@ async def update_theatre(
 
     update_data = theatre_in.model_dump(exclude_unset=True)
     for field, val in update_data.items():
+        if field == "name" and val:
+            val = val.strip()
         setattr(theatre, field, val)
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A venue with this name or slug already exists."
+        )
 
     refetched = await db.execute(
         select(Theatre).options(selectinload(Theatre.screens)).where(Theatre.id == theatre.id)

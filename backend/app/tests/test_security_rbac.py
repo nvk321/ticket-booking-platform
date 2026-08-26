@@ -117,3 +117,55 @@ async def test_organiser_ownership_isolation(client: AsyncClient):
         json={"name": "Hijacked Venue"}
     )
     assert mod_resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_duplicate_screen_name_in_theatre_rejected(client: AsyncClient):
+    email = f"org_screen_{uuid.uuid4().hex[:6]}@example.com"
+    await client.post("/api/v1/auth/register", json={"email": email, "password": "Password123!", "name": "Org Screen", "role": "ORGANISER"})
+    login = await client.post("/api/v1/auth/login", json={"email": email, "password": "Password123!"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Create theatre
+    t_resp = await client.post(
+        "/api/v1/theatres",
+        headers=headers,
+        json={"name": f"Screen Test Cinema {uuid.uuid4().hex[:4]}", "address": "123 Screen Way", "city": "Mumbai"}
+    )
+    theatre_id = t_resp.json()["id"]
+
+    # 1. Create first screen "IMAX 1"
+    s1_resp = await client.post(
+        "/api/v1/screens",
+        headers=headers,
+        json={"theatre_id": theatre_id, "name": "IMAX 1", "capacity": 100, "rows": 10, "cols": 10}
+    )
+    assert s1_resp.status_code == 201
+
+    # 2. Attempt duplicate screen "IMAX 1" in same theatre -> Must return 409 Conflict
+    s2_resp = await client.post(
+        "/api/v1/screens",
+        headers=headers,
+        json={"theatre_id": theatre_id, "name": "IMAX 1", "capacity": 100, "rows": 10, "cols": 10}
+    )
+    assert s2_resp.status_code == 409
+    assert "already exists" in s2_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_user_registration_rejected(client: AsyncClient):
+    email = f"dup_user_{uuid.uuid4().hex[:6]}@example.com"
+    # First registration -> 201 Created
+    r1 = await client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": "Password123!", "name": "User 1", "role": "CUSTOMER"}
+    )
+    assert r1.status_code == 201
+
+    # Duplicate registration -> 409 Conflict
+    r2 = await client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": "Password123!", "name": "User 2", "role": "CUSTOMER"}
+    )
+    assert r2.status_code == 409

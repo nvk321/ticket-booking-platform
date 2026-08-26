@@ -1,6 +1,7 @@
-﻿from typing import List
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_user
@@ -27,7 +28,13 @@ async def join_waitlist(
         )
         return result
     except ValueError as e:
+        err_msg = str(e).lower()
+        if "already on the active waitlist" in err_msg:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Waitlist entry conflict.")
 
 
 @router.get("/my")
